@@ -9,10 +9,16 @@ namespace LateNightStupidities.webdiff
     [XorClass(nameof(Settings))]
     internal class Settings : XorObject
     {
-        public string WorkingPath { get; } =
-            Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "cache");
+        [XorProperty]
+        public string WorkingPath { get; set; } = @".\cache\";
 
         [XorProperty]
         public string DiffToolPath { get; set; } = string.Empty;
+
+        [XorProperty]
+        public string DiffToolArgs { get; set; } = string.Empty;
+
+        [XorProperty]
+        public bool WriteSourceToFile { get; set; } = true;
     }
 }

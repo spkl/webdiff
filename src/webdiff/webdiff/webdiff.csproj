@@ -72,11 +72,13 @@
   <ItemGroup>
     <Compile Include="Data\Db.cs" />
     <Compile Include="Data\DbEntry.cs" />
+    <Compile Include="Filters.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Settings.cs" />
     <Compile Include="Urls.cs" />
     <Compile Include="Util.cs" />
+    <Compile Include="WebdiffErrorException.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />

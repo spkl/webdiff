@@ -9,7 +9,7 @@ namespace LateNightStupidities.webdiff.Data
     [XorClass(nameof(Db))]
     internal class Db : XorObject
     {
-        public static object Lock = new object();
+        public object Lock => this.Entries;
 
         [XorProperty(XorMultiplicity.List)]
         public List<DbEntry> Entries { get; set; } = new List<DbEntry>();

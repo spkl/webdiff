@@ -15,69 +15,105 @@ namespace LateNightStupidities.webdiff
     {
         static void Main(string[] args)
         {
-            Console.WriteLine($"webdiff {Assembly.GetExecutingAssembly().GetName().Version}, Copyright 2016 Sebastian Fischer");
+            ShowTitle();
             int exitCode = 0;
-
-            string localDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string settingsFileName = Path.Combine(localDir, "settings.xml");
-            string urlsFileName = Path.Combine(localDir, "urls.xml");
-            string dbFileName = Path.Combine(localDir, "db.xml");
-
-            if (CreateFilesIfNotExist(settingsFileName, urlsFileName, dbFileName))
+            try
             {
-                exitCode = 2;
+                string localDir = Util.AssemblyDir;
+                string settingsFileName = Path.Combine(localDir, "settings.xml");
+                string urlsFileName = Path.Combine(localDir, "urls.xml");
+                string dbFileName = Path.Combine(localDir, "db.xml");
+
+                CreateFilesIfNotExist(settingsFileName, urlsFileName, dbFileName);
+
+                Settings settings;
+                List<string> urls;
+                Db db;
+                Dictionary<string, string> urlFilters;
+                LoadSettings(out settings, settingsFileName, urlsFileName, dbFileName, out urls, out db, out urlFilters);
+
+                SetWorkingDir(settings);
+                string diffToolPath = GetDiffToolPath(settings);
+
+                DownloadFiles(urls, db, urlFilters, settings);
+                PresentResults(db, urls, diffToolPath, settings);
+                DeleteObsoleteFiles(db);
+                SaveDb(db, dbFileName);
             }
-            else
+            catch (WebdiffErrorException error)
             {
-                Console.Write("Loading settings... ");
-                var settings = XorController.Get().Load<Settings>(settingsFileName);
-                var urls = XorController.Get().Load<Urls>(urlsFileName).URLs;
-                var db = XorController.Get().Load<Db>(dbFileName);
-                Console.WriteLine("Done.");
-
-                Console.WriteLine($"Working path: {settings.WorkingPath}.");
-                Directory.CreateDirectory(settings.WorkingPath);
-                Environment.CurrentDirectory = settings.WorkingPath;
-
-                Console.Write("Downloading specified files...");
-                Parallel.ForEach(urls, (url, state) =>
+                using (Util.SetConsoleColor(ConsoleColor.Red))
                 {
-                    DbEntry entry;
-                    lock (Db.Lock)
-                    {
-                        entry = db.GetEntry(url);
-                        if (entry == null)
-                        {
-                            entry = db.AddEntry(url);
-                        }
-                    }
+                    Console.Error.WriteLine("Error: " + error.Message);
+                    Console.Error.WriteLine("Code: " + error.ExitCode);
+                }
 
-                    entry.CurrentFileName = $"webdiff{Guid.NewGuid()}.tmp";
-                    try
-                    {
-                        entry.Error = null;
-
-                        using (WebClient wc = new WebClient())
-                        {
-                            wc.DownloadFile(url, entry.CurrentFileName);
-                            Util.AddUrlToFile(entry.CurrentFileName, url);
-                            Console.Write(".");
-                            entry.CurrentHash = Util.HashFile(entry.CurrentFileName);
-                            entry.LastHash = Util.HashFile(entry.LastFileName);
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        Console.Write("E");
-                        entry.Error = e.Message;
-                    }
-                });
-                Console.WriteLine();
-
-                lock (Db.Lock)
+                exitCode = error.ExitCode;
+            }
+            catch (Exception e)
+            {
+                using (Util.SetConsoleColor(ConsoleColor.Red))
                 {
-                    var errorEntries = db.Entries.Where(e => e.Error != null && !string.IsNullOrEmpty(e.CurrentFileName)).ToList();
-                    if (errorEntries.Count > 0)
+                    Console.Error.WriteLine("An unexpected internal program error occurred: " + e.Message);
+                    Console.Error.WriteLine(e.StackTrace);
+                }
+
+                exitCode = -1;
+            }
+
+            if (args.Length < 1 || args[0] != "/q")
+            {
+                Console.WriteLine("Press any key to exit...");
+                Console.ReadKey();
+            }
+
+            Environment.Exit(exitCode);
+        }
+
+        private static void ShowTitle()
+        {
+            using (Util.SetConsoleColor(ConsoleColor.DarkCyan))
+            {
+                AssemblyName assemblyName = Assembly.GetExecutingAssembly().GetName();
+                Console.WriteLine($"{assemblyName.Name} {assemblyName.Version}, Copyright 2016 Sebastian Fischer");
+            }
+        }
+
+        private static void SaveDb(Db db, string dbFileName)
+        {
+            Console.WriteLine();
+            Console.Write("Saving data... ");
+            XorController.Get().Save(db, dbFileName);
+            Console.WriteLine("Done.");
+        }
+
+        private static void DeleteObsoleteFiles(Db db)
+        {
+            lock (db.Lock)
+            {
+                foreach (DbEntry entry in db.Entries.Where(e => e.Error == null))
+                {
+                    if (!string.IsNullOrEmpty(entry.ObsoleteFileName) && File.Exists(entry.ObsoleteFileName))
+                    {
+                        File.Delete(entry.ObsoleteFileName);
+                        entry.ObsoleteFileName = entry.LastFileName;
+                    }
+
+                    entry.ObsoleteFileName = entry.LastFileName;
+                    entry.LastFileName = entry.CurrentFileName;
+                }
+            }
+        }
+
+        private static void PresentResults(Db db, List<string> urls, string diffToolPath, Settings settings)
+        {
+            lock (db.Lock)
+            {
+                var errorEntries =
+                    db.Entries.Where(e => e.Error != null && !string.IsNullOrEmpty(e.CurrentFileName)).ToList();
+                if (errorEntries.Count > 0)
+                {
+                    using (Util.SetConsoleColor(ConsoleColor.Yellow))
                     {
                         Console.WriteLine();
                         Console.WriteLine("The following errors occurred:");
@@ -86,96 +122,187 @@ namespace LateNightStupidities.webdiff
                             Console.WriteLine($"{errEntry.URL}: {errEntry.Error}");
                         }
                     }
+                }
 
-                    var newEntries = db.Entries.Where(e => e.Error == null && e.LastHash == null && urls.Contains(e.URL)).ToList();
-                    if (newEntries.Count > 0)
+                var newEntries =
+                    db.Entries.Where(e => e.Error == null && e.LastHash == null && urls.Contains(e.URL)).ToList();
+                if (newEntries.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("These URLs are new (no comparison possible):");
+                    foreach (DbEntry entry in newEntries)
                     {
-                        Console.WriteLine();
-                        Console.WriteLine("These URLs are new (no comparison possible):");
-                        foreach (DbEntry entry in newEntries)
-                        {
-                            Console.WriteLine($"\t{entry.URL}");
-                        }
-                    }
-
-                    var oldEntries = db.Entries.Where(e => !urls.Contains(e.URL)).ToList();
-                    if (oldEntries.Count > 0)
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("These URLs are no longer in the list and will be deleted:");
-                        foreach (DbEntry entry in oldEntries)
-                        {
-                            Console.WriteLine($"\t{entry.URL}");
-                            db.Entries.RemoveAll(e => e.URL == entry.URL);
-                            if (!string.IsNullOrEmpty(entry.ObsoleteFileName))
-                            {
-                                File.Delete(entry.ObsoleteFileName);
-                            }
-                            if (!string.IsNullOrEmpty(entry.LastFileName))
-                            {
-                                File.Delete(entry.LastFileName);
-                            }
-                        }
-                    }
-
-                    var changedEntries =
-                        db.Entries.Where(
-                            e =>
-                                e.Error == null && e.LastHash != null && e.CurrentHash != null &&
-                                !e.CurrentHash.SequenceEqual(e.LastHash)).ToList();
-                    if (changedEntries.Count > 0)
-                    {
-                        bool openDiffTool = !string.IsNullOrEmpty(settings.DiffToolPath);
-
-                        Console.WriteLine();
-                        Console.WriteLine("The files at these URLs changed:");
-                        foreach (DbEntry entry in changedEntries)
-                        {
-                            Console.WriteLine($"\t{entry.URL}");
-                            if (openDiffTool)
-                            {
-                                ProcessStartInfo si = new ProcessStartInfo("cmd.exe");
-                                si.ErrorDialog = true;
-                                si.UseShellExecute = false;
-                                si.CreateNoWindow = true;
-                                si.Arguments = string.Format("/c \"{0} \"{1}\" \"{2}\"\"", settings.DiffToolPath,
-                                    Path.Combine(Environment.CurrentDirectory, entry.LastFileName),
-                                    Path.Combine(Environment.CurrentDirectory, entry.CurrentFileName));
-                                Process.Start(si);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("No changes detected!");
-                    }
-
-                    foreach (DbEntry entry in db.Entries.Where(e => e.Error == null))
-                    {
-                        if (!string.IsNullOrEmpty(entry.ObsoleteFileName) && File.Exists(entry.ObsoleteFileName))
-                        {
-                            File.Delete(entry.ObsoleteFileName);
-                            entry.ObsoleteFileName = entry.LastFileName;
-                        }
-
-                        entry.ObsoleteFileName = entry.LastFileName;
-                        entry.LastFileName = entry.CurrentFileName;
+                        Console.WriteLine($"\t{entry.URL}");
                     }
                 }
 
-                Console.WriteLine();
-                Console.Write("Saving data... ");
-                XorController.Get().Save(db, dbFileName);
-                Console.WriteLine("Done.");
-            }
+                var oldEntries = db.Entries.Where(e => !urls.Contains(e.URL)).ToList();
+                if (oldEntries.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("These URLs are no longer in the list and will be deleted:");
+                    foreach (DbEntry entry in oldEntries)
+                    {
+                        Console.WriteLine($"\t{entry.URL}");
+                        db.Entries.RemoveAll(e => e.URL == entry.URL);
+                        if (!string.IsNullOrEmpty(entry.ObsoleteFileName))
+                        {
+                            File.Delete(entry.ObsoleteFileName);
+                        }
+                        if (!string.IsNullOrEmpty(entry.LastFileName))
+                        {
+                            File.Delete(entry.LastFileName);
+                        }
+                    }
+                }
 
-            Console.WriteLine("Press any key to exit...");
-            Console.ReadKey();
-            Environment.Exit(exitCode);
+                var changedEntries =
+                    db.Entries.Where(
+                        e =>
+                            e.Error == null && e.LastHash != null && e.CurrentHash != null &&
+                            !e.CurrentHash.SequenceEqual(e.LastHash)).ToList();
+                if (changedEntries.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("The files at these URLs changed:");
+                    foreach (DbEntry entry in changedEntries)
+                    {
+                        Console.WriteLine($"\t{entry.URL}");
+
+                        string diffToolArgs = settings.DiffToolArgs;
+                        diffToolArgs = diffToolArgs.Replace("{OldFile}", entry.LastFileName);
+                        diffToolArgs = diffToolArgs.Replace("{NewFile}", entry.CurrentFileName);
+                        diffToolArgs = diffToolArgs.Replace("{OldTitle}",
+                            $"{entry.URL} ({new FileInfo(entry.LastFileName).LastWriteTime})");
+                        diffToolArgs = diffToolArgs.Replace("{NewTitle}",
+                            $"{entry.URL} ({new FileInfo(entry.CurrentFileName).LastWriteTime})");
+
+                        ProcessStartInfo si = new ProcessStartInfo(diffToolPath)
+                        {
+                            UseShellExecute = false,
+                            Arguments = diffToolArgs
+                        };
+                        Process.Start(si);
+                    }
+                }
+                else
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("No changes detected!");
+                }
+            }
         }
 
-        private static bool CreateFilesIfNotExist(string settingsFileName, string urlsFileName, string dbFileName)
+        private static void DownloadFiles(List<string> urls, Db db, Dictionary<string, string> urlFilters, Settings settings)
+        {
+            Console.Write("Downloading specified files...");
+            Parallel.ForEach(urls, (url, state) =>
+            {
+                DbEntry entry;
+                lock (db.Lock)
+                {
+                    entry = db.GetEntry(url);
+                    if (entry == null)
+                    {
+                        entry = db.AddEntry(url);
+                    }
+                }
+
+                entry.CurrentFileName = $"webdiff_{Guid.NewGuid()}.wd";
+                try
+                {
+                    entry.Error = null;
+
+                    using (WebClient wc = new WebClient())
+                    {
+                        wc.DownloadFile(url, entry.CurrentFileName);
+
+                        if (settings.WriteSourceToFile)
+                        {
+                            Util.AddUrlToFile(entry.CurrentFileName, url);
+                        }
+
+                        string filter;
+                        if (urlFilters.TryGetValue(url, out filter))
+                        {
+                            Filters.Filter(entry.CurrentFileName, filter);
+                        }
+
+                        entry.CurrentHash = Util.HashFile(entry.CurrentFileName);
+                        entry.LastHash = Util.HashFile(entry.LastFileName);
+                        Console.Write(".");
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.Write("E");
+                    entry.Error = e.Message;
+                }
+            });
+            Console.Write(" Done.");
+            Console.WriteLine();
+        }
+
+        private static string GetDiffToolPath(Settings settings)
+        {
+            if (string.IsNullOrEmpty(settings.DiffToolPath))
+            {
+                throw new WebdiffErrorException(
+                    "The path to the diff tool is not set. Edit settings.xml and set DiffToolPath.", 4);
+            }
+
+            string diffToolPath = Util.GetRootedPath(settings.DiffToolPath);
+            if (!File.Exists(diffToolPath))
+            {
+                throw new WebdiffErrorException("The diff tool does not exist: " + diffToolPath, 5);
+            }
+            return diffToolPath;
+        }
+
+        private static void SetWorkingDir(Settings settings)
+        {
+            if (string.IsNullOrWhiteSpace(settings.WorkingPath))
+            {
+                throw new WebdiffErrorException(
+                    "The working path is not set. Check settings.xml and set WorkingPath.", 3);
+            }
+
+            string workingDir = Path.GetFullPath(Util.GetRootedPath(settings.WorkingPath));
+            Console.WriteLine($"Working path: {workingDir}.");
+            Directory.CreateDirectory(workingDir);
+            Environment.CurrentDirectory = workingDir;
+        }
+
+        private static void LoadSettings(out Settings settings, string settingsFileName, string urlsFileName, string dbFileName, out List<string> urls, out Db db, out Dictionary<string, string> urlFilters)
+        {
+            Console.Write("Loading settings... ");
+            settings = XorController.Get().Load<Settings>(settingsFileName);
+            urls = XorController.Get().Load<Urls>(urlsFileName).URLs;
+            db = XorController.Get().Load<Db>(dbFileName);
+
+            urlFilters = new Dictionary<string, string>();
+            foreach (string url in urls.ToList())
+            {
+                if (!url.Contains("|"))
+                {
+                    continue;
+                }
+
+                string[] split = url.Split('|');
+                string realUrl = split[0];
+                string filter = split[1];
+
+                urls.Remove(url);
+                urls.Add(realUrl);
+                urlFilters[realUrl] = filter;
+            }
+
+            urls = urls.Distinct().ToList();
+
+            Console.WriteLine("Done.");
+        }
+
+        private static void CreateFilesIfNotExist(string settingsFileName, string urlsFileName, string dbFileName)
         {
             bool createdFile = false;
 
@@ -205,7 +332,11 @@ namespace LateNightStupidities.webdiff
                 XorController.Get().Save(new Db(), dbFileName);
             }
 
-            return createdFile;
+            if (createdFile)
+            {
+                throw new WebdiffErrorException(
+                    "A required file did not exist and was created. Check file contents and try again.", 2);
+            }
         }
     }
 }
