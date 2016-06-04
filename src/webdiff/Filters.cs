@@ -16,11 +16,20 @@ namespace LateNightStupidities.webdiff
                 string typeName = split[1];
                 string methodName = split[2];
 
-                Assembly assembly = Assembly.LoadFrom(assemblyFile);
+                Assembly assembly = Assembly.LoadFrom(Util.GetRootedPath(assemblyFile));
                 Type type = assembly.GetType(typeName);
+                if (type == null)
+                {
+                    throw new Exception($"Filter error. Type {typeName} was not found in the specified assembly.");
+                }
+
                 MethodInfo method = type.GetMethod(methodName,
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] {typeof(string)},
                     null);
+                if (method == null)
+                {
+                    throw new Exception($"Filter error. Method {methodName} (static, one string argument) was not found on type {typeName}.");
+                }
 
                 method.Invoke(null, new object[] { file });
             }
