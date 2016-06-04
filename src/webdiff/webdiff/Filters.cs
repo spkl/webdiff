@@ -53,5 +53,23 @@ namespace LateNightStupidities.webdiff
 
             File.WriteAllLines(file, newLines);
         }
+
+        private static void Filter_updated(string file)
+        {
+            string[] lines = File.ReadAllLines(file);
+            List<string> newLines = new List<string>(lines.Length);
+            foreach (string line in lines)
+            {
+                string trimmed = line.Trim();
+                if (trimmed.StartsWith("<updated>") && trimmed.EndsWith("</updated>"))
+                {
+                    continue;
+                }
+
+                newLines.Add(line);
+            }
+
+            File.WriteAllLines(file, newLines);
+        }
     }
 }
