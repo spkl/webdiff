@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Reflection;
 
@@ -10,58 +9,65 @@ namespace LateNightStupidities.webdiff
     {
         public static void Filter(string file, string filter)
         {
-            MethodInfo method = typeof(Filters).GetMethod($"Filter_{filter}",
+            if (filter.Contains(";"))
+            {
+                string[] split = filter.Split(';');
+                string assemblyFile = split[0];
+                string typeName = split[1];
+                string methodName = split[2];
+
+                Assembly assembly = Assembly.LoadFrom(assemblyFile);
+                Type type = assembly.GetType(typeName);
+                MethodInfo method = type.GetMethod(methodName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] {typeof(string)},
+                    null);
+
+                method.Invoke(null, new object[] { file });
+            }
+            else
+            {
+                MethodInfo method = typeof(Filters).GetMethod($"Filter_{filter}",
                 BindingFlags.NonPublic | BindingFlags.Static);
 
-            if (method == null)
-            {
-                throw new Exception($"There is no filter method with name {filter}.");
-            }
+                if (method == null)
+                {
+                    throw new Exception($"There is no builtin filter method with name {filter}.");
+                }
 
-            method.Invoke(null, new object[] { file });
+                method.Invoke(null, new object[] { file });
+            }
         }
 
         private static void Filter_DTSTAMP(string file)
         {
-            string[] lines = File.ReadAllLines(file);
-            List<string> newLines = new List<string>(lines.Length);
-            foreach (string line in lines)
-            {
-                if (!line.StartsWith("DTSTAMP:"))
-                {
-                    newLines.Add(line);
-                }
-            }
-
-            File.WriteAllLines(file, newLines);
+            FilterLineBased(file, "DTSTAMP:", null, false);
         }
 
         private static void Filter_lastBuildDate(string file)
         {
-            string[] lines = File.ReadAllLines(file);
-            List<string> newLines = new List<string>(lines.Length);
-            foreach (string line in lines)
-            {
-                string trimmed = line.Trim();
-                if (trimmed.StartsWith("<lastBuildDate>") && trimmed.EndsWith("</lastBuildDate>"))
-                {
-                    continue;
-                }
-
-                newLines.Add(line);
-            }
-
-            File.WriteAllLines(file, newLines);
+            FilterLineBased(file, "<lastBuildDate>", "</lastBuildDate>", true);
         }
 
         private static void Filter_updated(string file)
+        {
+            FilterLineBased(file, "<updated>", "</updated>", true);
+        }
+
+        private static void FilterLineBased(string file, string startsWith, string endsWith, bool trim)
         {
             string[] lines = File.ReadAllLines(file);
             List<string> newLines = new List<string>(lines.Length);
             foreach (string line in lines)
             {
-                string trimmed = line.Trim();
-                if (trimmed.StartsWith("<updated>") && trimmed.EndsWith("</updated>"))
+                string value = line;
+
+                if (trim)
+                {
+                    value = value.Trim();
+                }
+
+                if ((startsWith == null || value.StartsWith(startsWith)) &&
+                    (endsWith == null || value.EndsWith(endsWith)))
                 {
                     continue;
                 }
